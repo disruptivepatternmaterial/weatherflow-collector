@@ -7,6 +7,11 @@ WORKDIR /app/weatherflow-collector
 # Copy the requirements file from the root of the build context
 COPY requirements.txt ./
 
+# Install PostgreSQL client libs needed by psycopg (binary wheels)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 && \
+    rm -rf /var/lib/apt/lists/*
+
 # Upgrade pip and install required packages in one layer
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \

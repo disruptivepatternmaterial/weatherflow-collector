@@ -64,6 +64,7 @@ from station_metadata_manager import StationMetadataManager
 from storage.file import FileStorage
 from handlers.handler import Handler
 from storage.influxdb import InfluxDBStorage
+from storage.timescaledb import TimescaleDBStorage
 from handlers.system_metrics import SystemMetricsHandler
 from config_validator import validate_all
 
@@ -109,6 +110,14 @@ async def setup_app():
         event_manager.subscribe("influxdb_storage_event", handler_influxdb)
     else:
         logger_main.info("handler_influxdb disabled.")
+
+    if config.WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED:
+        logger_main.info("handler_timescaledb enabled.")
+        handler_timescaledb = TimescaleDBStorage(event_manager)
+        await handler_timescaledb.initialize()
+        event_manager.subscribe("influxdb_storage_event", handler_timescaledb)
+    else:
+        logger_main.info("handler_timescaledb disabled.")
 
     if config.WEATHERFLOW_COLLECTOR_SYSTEM_METRICS_ENABLED:
         logger_main.info("system_metrics_event enabled.")

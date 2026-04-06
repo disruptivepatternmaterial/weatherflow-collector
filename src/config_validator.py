@@ -118,13 +118,77 @@ def validate_module_enablement():
         config.WEATHERFLOW_COLLECTOR_PROVIDER_WEBSOCKET_SERVER_ENABLED,
     )
     log_module_status("Handler", config.WEATHERFLOW_COLLECTOR_HANDLER_ENABLED)
+    log_module_status(
+        "Storage TimescaleDB", config.WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED
+    )
 
     return True
 
 
-def validate_all():
-    return (
-        validate_api_config()
-        and validate_module_enablement()
-        and validate_influxdb_config()
+def validate_timescaledb_config():
+    if not config.WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED:
+        return True
+
+    missing_config = []
+    if not config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_HOST:
+        missing_config.append("WEATHERFLOW_COLLECTOR_TIMESCALEDB_HOST")
+    else:
+        logger_ConfigValidator.info(
+            f"TimescaleDB Host is set to: {config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_HOST}"
+        )
+
+    if not config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_DATABASE:
+        missing_config.append("WEATHERFLOW_COLLECTOR_TIMESCALEDB_DATABASE")
+    else:
+        logger_ConfigValidator.info(
+            f"TimescaleDB Database is set to: {config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_DATABASE}"
+        )
+
+    if not config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_USER:
+        missing_config.append("WEATHERFLOW_COLLECTOR_TIMESCALEDB_USER")
+    else:
+        logger_ConfigValidator.info(
+            f"TimescaleDB User is set to: {config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_USER}"
+        )
+
+    if not config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_PASSWORD:
+        missing_config.append("WEATHERFLOW_COLLECTOR_TIMESCALEDB_PASSWORD")
+    else:
+        obscured = obfuscate_token(config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_PASSWORD)
+        logger_ConfigValidator.info(
+            f"TimescaleDB Password is set (partially shown): {obscured}"
+        )
+
+    if missing_config:
+        logger_ConfigValidator.error(
+            f"Missing TimescaleDB configuration(s): {', '.join(missing_config)}."
+        )
+        return False
+
+    logger_ConfigValidator.info(
+        f"TimescaleDB Port: {config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_PORT}"
     )
+    logger_ConfigValidator.info(
+        f"TimescaleDB SSL Mode: {config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_SSLMODE}"
+    )
+    return True
+
+
+def validate_all():
+    if not validate_api_config():
+        return False
+    if not validate_module_enablement():
+        return False
+
+    influx_ok = True
+    if config.WEATHERFLOW_COLLECTOR_STORAGE_INFLUXDB_ENABLED:
+        influx_ok = validate_influxdb_config()
+
+    timescale_ok = validate_timescaledb_config()
+
+    if not config.WEATHERFLOW_COLLECTOR_STORAGE_INFLUXDB_ENABLED and not config.WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED:
+        logger_ConfigValidator.warning(
+            "Neither InfluxDB nor TimescaleDB storage is enabled. Data will not be persisted."
+        )
+
+    return influx_ok and timescale_ok

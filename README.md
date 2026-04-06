@@ -700,6 +700,103 @@ The biggest change here is:
    
        Token y0uR5uP3rSecr3tT0k3n
 
+## TimescaleDB Storage Backend
+
+In addition to InfluxDB, the collector supports writing to **TimescaleDB** (PostgreSQL with the TimescaleDB extension). You can run both backends in parallel (dual-write) or use TimescaleDB exclusively.
+
+### TimescaleDB Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED` | `False` | Enable the TimescaleDB backend |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_HOST` | `localhost` | PostgreSQL/TimescaleDB hostname |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_PORT` | `5432` | PostgreSQL port |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_DATABASE` | `weatherflow` | Database name |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_USER` | `weatherflow` | Database user |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_PASSWORD` | *(none)* | Database password |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_SSLMODE` | `prefer` | SSL mode (`disable`, `prefer`, `require`) |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_POOL_MIN` | `2` | Minimum connection pool size |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_POOL_MAX` | `10` | Maximum connection pool size |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_BATCH_SIZE` | `500` | Rows per batch insert |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_FLUSH_INTERVAL` | `5` | Flush interval in seconds |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_MAX_RETRIES` | `5` | Max write retries on failure |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_RETRY_DELAY` | `2` | Seconds between retries |
+| `WEATHERFLOW_COLLECTOR_TIMESCALEDB_SCHEMA_AUTO_CREATE` | `True` | Auto-add missing columns to weather.readings on startup |
+
+### Run Modes
+
+- **InfluxDB only** (default): `WEATHERFLOW_COLLECTOR_STORAGE_INFLUXDB_ENABLED=True`
+- **TimescaleDB only**: `WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED=True`, `WEATHERFLOW_COLLECTOR_STORAGE_INFLUXDB_ENABLED=False`
+- **Dual-write**: Both set to `True` for migration/validation
+
+### Portainer Stack (weatherflow-collector)
+
+This stack uses `network_mode: host` so the collector can receive UDP broadcasts from the Tempest hub on the local LAN **and** reach PostgreSQL/TimescaleDB at `localhost:5432`.
+
+You must build a custom image first (the upstream Docker Hub image does not include TimescaleDB support). On the Docker host:
+
+```bash
+cd /path/to/weatherflow-collector
+docker build -t weatherflow-collector-tsdb:latest .
+```
+
+Then paste this into **Portainer > Stacks > Add Stack > Web editor**:
+
+```yaml
+# Portainer Stack — WeatherFlow Collector → TimescaleDB
+# Writes into weather.readings hypertable in the timeseries database.
+# Requires: postgres_default network (from Stack 40) and port 5432 published.
+services:
+  weatherflow-collector:
+    container_name: weatherflow-collector
+    image: weatherflow-collector-tsdb:latest
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      TZ: America/Los_Angeles
+      WEATHERFLOW_COLLECTOR_API_TOKEN: YOUR_WEATHERFLOW_API_TOKEN
+      # --- Storage backends ---
+      WEATHERFLOW_COLLECTOR_STORAGE_INFLUXDB_ENABLED: "False"
+      WEATHERFLOW_COLLECTOR_STORAGE_TIMESCALEDB_ENABLED: "True"
+      # --- TimescaleDB connection (timeseries DB on Stack 40 postgres) ---
+      WEATHERFLOW_COLLECTOR_TIMESCALEDB_HOST: localhost
+      WEATHERFLOW_COLLECTOR_TIMESCALEDB_PORT: "5432"
+      WEATHERFLOW_COLLECTOR_TIMESCALEDB_DATABASE: timeseries
+      WEATHERFLOW_COLLECTOR_TIMESCALEDB_USER: homeassistant
+      WEATHERFLOW_COLLECTOR_TIMESCALEDB_PASSWORD: "3xVkUs67MUud"
+      WEATHERFLOW_COLLECTOR_TIMESCALEDB_SSLMODE: disable
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+### Querying WeatherFlow Data in Grafana
+
+The data lands in the same `weather.readings` table as your LoRaWAN, Particle, and PurpleAir data. Filter by `source = 'weatherflow'`:
+
+```sql
+SELECT
+  time,
+  temperature_c,
+  humidity_pct,
+  pressure_hpa,
+  wind_speed_mps,
+  wind_gust_mps,
+  wind_direction_deg,
+  uvi,
+  solar_radiation_wm2,
+  precipitation_mm
+FROM weather.readings
+WHERE source = 'weatherflow'
+  AND device_id = '$device_id'
+  AND $__timeFilter(time)
+ORDER BY time;
+```
+
+Join with `weather.device_locations` for location hierarchy just like other sources.
+
 ## Multiple Devices
 
 The data collector and dashboards support multiple WeatherFlow Tempest devices.

@@ -3,5 +3,6 @@ aiohttp==3.9.5
 influxdb_client==1.44.0
 mysql-connector-python==8.4.0
 pandas==2.2.2
+psycopg[binary,pool]==3.2.4
 pytz==2024.1
 websockets==12.0
