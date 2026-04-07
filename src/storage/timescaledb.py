@@ -208,13 +208,21 @@ class TimescaleDBStorage:
         self._ready = True
         logger_ts.info("TimescaleDB storage ready")
 
+    SKIP_PREFIXES = (
+        "weatherflow_forecast",
+        "weatherflow_stats",
+        "weatherflow_system",
+    )
+
     def _is_observation(self, measurement):
+        if not measurement:
+            return False
+        for prefix in self.SKIP_PREFIXES:
+            if measurement.startswith(prefix):
+                return False
         if measurement in OBSERVATION_MEASUREMENTS:
             return True
-        if measurement and (
-            measurement.startswith("obs_")
-            or measurement.startswith("weatherflow_")
-        ):
+        if measurement.startswith("obs_") or measurement.startswith("weatherflow_"):
             return True
         return False
 
