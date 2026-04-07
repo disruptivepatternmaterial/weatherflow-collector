@@ -1,13 +1,13 @@
 """
 TimescaleDB Storage Backend for WeatherFlow Collector
 
-Writes observation data into the existing ``weather.readings`` hypertable,
-mapping WeatherFlow field names to the table's column names.  Non-observation
-measurements (forecasts, device/hub status, system metrics) are skipped with
-a debug log.
+Two-table strategy:
+  - weather.readings           — observation data with typed columns
+  - weather.weatherflow_raw    — ALL data (forecasts, device/hub status,
+                                 system metrics, observations) as JSONB
 
-The full raw fields dict is stored in the ``raw_payload`` JSONB column so
-nothing is lost even if a column mapping is missing.
+Every event goes to weatherflow_raw.  Observations additionally get
+column-mapped into weather.readings.
 """
 
 import asyncio
@@ -26,7 +26,8 @@ from storage.timescaledb_schema import ensure_schema
 
 logger_ts = logger.get_module_logger(__name__ + ".TimescaleDBStorage")
 
-# Measurements that represent actual weather observations.
+# --- observation filter (weather.readings) ---
+
 OBSERVATION_MEASUREMENTS = {
     "weatherflow_obs",
     "weatherflow_rapid_wind",
@@ -42,7 +43,16 @@ OBSERVATION_MEASUREMENTS = {
     "evt_precip",
 }
 
-# WeatherFlow field name → weather.readings column name.
+NON_OBSERVATION_PREFIXES = (
+    "weatherflow_forecast",
+    "weatherflow_stats",
+    "weatherflow_system",
+    "weatherflow_device_status",
+    "weatherflow_hub_status",
+)
+
+# --- field mapping for weather.readings ---
+
 FIELD_TO_COLUMN = {
     "air_temperature": "temperature_c",
     "relative_humidity": "humidity_pct",
@@ -69,42 +79,27 @@ FIELD_TO_COLUMN = {
     "firmware_revision": "firmware_version",
 }
 
-# All columns in weather.readings that we may populate (order matters for SQL).
 READING_COLUMNS = [
-    "time",
-    "device_id",
-    "device_name",
-    "source",
-    "measurement",
-    "temperature_c",
-    "temperature_f",
-    "humidity_pct",
-    "pressure_hpa",
-    "sea_level_pressure_hpa",
-    "wind_speed_mps",
-    "wind_direction_deg",
-    "wind_gust_mps",
-    "wind_lull_mps",
-    "uvi",
-    "dew_point_c",
-    "solar_radiation_wm2",
-    "illuminance_lux",
-    "lightning_strike_count",
-    "lightning_strike_avg_distance_km",
-    "precipitation_mm",
-    "precip_accum_local_day_mm",
-    "precip_accum_local_yesterday_mm",
-    "feels_like_c",
-    "heat_index_c",
-    "wind_chill_c",
-    "battery_voltage_v",
-    "firmware_version",
-    "raw_payload",
+    "time", "device_id", "device_name", "source", "measurement",
+    "temperature_c", "temperature_f", "humidity_pct", "pressure_hpa",
+    "sea_level_pressure_hpa", "wind_speed_mps", "wind_direction_deg",
+    "wind_gust_mps", "wind_lull_mps", "uvi", "dew_point_c",
+    "solar_radiation_wm2", "illuminance_lux", "lightning_strike_count",
+    "lightning_strike_avg_distance_km", "precipitation_mm",
+    "precip_accum_local_day_mm", "precip_accum_local_yesterday_mm",
+    "feels_like_c", "heat_index_c", "wind_chill_c",
+    "battery_voltage_v", "firmware_version", "raw_payload",
 ]
 
 _COLS_CSV = ", ".join(READING_COLUMNS)
 _PLACEHOLDERS = ", ".join(["%s"] * len(READING_COLUMNS))
-INSERT_SQL = f"INSERT INTO weather.readings ({_COLS_CSV}) VALUES ({_PLACEHOLDERS})"
+INSERT_READINGS_SQL = f"INSERT INTO weather.readings ({_COLS_CSV}) VALUES ({_PLACEHOLDERS})"
+
+INSERT_RAW_SQL = """
+INSERT INTO weather.weatherflow_raw
+    (ts, measurement, device_id, station_id, collector_type, tags, fields)
+VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+"""
 
 
 def _ts_to_datetime(timestamp):
@@ -114,7 +109,6 @@ def _ts_to_datetime(timestamp):
 
 
 def _extract_device_id(tags):
-    """Pick the best device identifier from the tags dict."""
     return (
         tags.get("serial_number")
         or tags.get("device_id")
@@ -123,8 +117,22 @@ def _extract_device_id(tags):
     )
 
 
-def _build_row(measurement, tags, fields, timestamp):
-    """Map a single event into a tuple matching READING_COLUMNS order."""
+def _build_raw_row(measurement, tags, fields, timestamp):
+    """Build a tuple for weather.weatherflow_raw."""
+    sorted_tags = dict(sorted(tags.items()))
+    return (
+        _ts_to_datetime(timestamp),
+        measurement,
+        _extract_device_id(sorted_tags),
+        sorted_tags.get("station_id", ""),
+        sorted_tags.get("collector_type", ""),
+        json.dumps(sorted_tags),
+        json.dumps(fields),
+    )
+
+
+def _build_readings_row(measurement, tags, fields, timestamp):
+    """Build a tuple for weather.readings (observations only)."""
     fields = utils.normalize_fields(fields)
     sorted_tags = dict(sorted(tags.items()))
 
@@ -141,35 +149,35 @@ def _build_row(measurement, tags, fields, timestamp):
         mapped["temperature_f"] = round(float(temp_c) * 9.0 / 5.0 + 32.0, 2)
 
     return (
-        _ts_to_datetime(timestamp),                          # time
-        device_id,                                           # device_id
-        device_name,                                         # device_name
-        "weatherflow",                                       # source
-        measurement,                                         # measurement
-        mapped.get("temperature_c"),                         # temperature_c
-        mapped.get("temperature_f"),                         # temperature_f
-        mapped.get("humidity_pct"),                          # humidity_pct
-        mapped.get("pressure_hpa"),                          # pressure_hpa
-        mapped.get("sea_level_pressure_hpa"),                # sea_level_pressure_hpa
-        mapped.get("wind_speed_mps"),                        # wind_speed_mps
-        mapped.get("wind_direction_deg"),                    # wind_direction_deg
-        mapped.get("wind_gust_mps"),                         # wind_gust_mps
-        mapped.get("wind_lull_mps"),                         # wind_lull_mps
-        mapped.get("uvi"),                                   # uvi
-        mapped.get("dew_point_c"),                           # dew_point_c
-        mapped.get("solar_radiation_wm2"),                   # solar_radiation_wm2
-        mapped.get("illuminance_lux"),                       # illuminance_lux
-        mapped.get("lightning_strike_count"),                 # lightning_strike_count
-        mapped.get("lightning_strike_avg_distance_km"),       # lightning_strike_avg_distance_km
-        mapped.get("precipitation_mm"),                      # precipitation_mm
-        mapped.get("precip_accum_local_day_mm"),             # precip_accum_local_day_mm
-        mapped.get("precip_accum_local_yesterday_mm"),       # precip_accum_local_yesterday_mm
-        mapped.get("feels_like_c"),                          # feels_like_c
-        mapped.get("heat_index_c"),                          # heat_index_c
-        mapped.get("wind_chill_c"),                          # wind_chill_c
-        mapped.get("battery_voltage_v"),                     # battery_voltage_v
+        _ts_to_datetime(timestamp),
+        device_id,
+        device_name,
+        "weatherflow",
+        measurement,
+        mapped.get("temperature_c"),
+        mapped.get("temperature_f"),
+        mapped.get("humidity_pct"),
+        mapped.get("pressure_hpa"),
+        mapped.get("sea_level_pressure_hpa"),
+        mapped.get("wind_speed_mps"),
+        mapped.get("wind_direction_deg"),
+        mapped.get("wind_gust_mps"),
+        mapped.get("wind_lull_mps"),
+        mapped.get("uvi"),
+        mapped.get("dew_point_c"),
+        mapped.get("solar_radiation_wm2"),
+        mapped.get("illuminance_lux"),
+        mapped.get("lightning_strike_count"),
+        mapped.get("lightning_strike_avg_distance_km"),
+        mapped.get("precipitation_mm"),
+        mapped.get("precip_accum_local_day_mm"),
+        mapped.get("precip_accum_local_yesterday_mm"),
+        mapped.get("feels_like_c"),
+        mapped.get("heat_index_c"),
+        mapped.get("wind_chill_c"),
+        mapped.get("battery_voltage_v"),
         str(mapped["firmware_version"]) if mapped.get("firmware_version") is not None else None,
-        json.dumps({"tags": sorted_tags, "fields": fields}), # raw_payload
+        json.dumps({"tags": sorted_tags, "fields": fields}),
     )
 
 
@@ -183,7 +191,6 @@ class TimescaleDBStorage:
         self._ready = False
 
     async def initialize(self):
-        """Open the connection pool and run schema migrations."""
         conninfo = (
             f"host={config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_HOST} "
             f"port={config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_PORT} "
@@ -208,64 +215,80 @@ class TimescaleDBStorage:
         self._ready = True
         logger_ts.info("TimescaleDB storage ready")
 
-    SKIP_PREFIXES = (
-        "weatherflow_forecast",
-        "weatherflow_stats",
-        "weatherflow_system",
-    )
-
     def _is_observation(self, measurement):
         if not measurement:
             return False
-        for prefix in self.SKIP_PREFIXES:
+        for prefix in NON_OBSERVATION_PREFIXES:
             if measurement.startswith(prefix):
                 return False
         if measurement in OBSERVATION_MEASUREMENTS:
             return True
-        if measurement.startswith("obs_") or measurement.startswith("weatherflow_"):
+        if measurement.startswith("obs_") or measurement.startswith("weatherflow_obs"):
             return True
         return False
 
-    async def save_data(self, measurement, tags, fields, timestamp=None):
-        if not self._is_observation(measurement):
-            logger_ts.debug(f"Skipping non-observation measurement: {measurement}")
-            return
-
-        row = _build_row(measurement, tags, fields, timestamp)
+    async def _write_raw(self, measurement, tags, fields, timestamp):
+        """Write one row to weatherflow_raw (all measurement types)."""
+        row = _build_raw_row(measurement, tags, fields, timestamp)
         async with self.pool.connection() as conn:
             async with conn.cursor() as cur:
-                await cur.execute(INSERT_SQL, row)
+                await cur.execute(INSERT_RAW_SQL, row)
             await conn.commit()
-        logger_ts.debug(f"Wrote 1 row for {measurement}")
 
-    async def save_batch_data(self, batch):
-        if not batch:
-            return
-
+    async def _write_raw_batch(self, batch):
+        """Write a batch to weatherflow_raw."""
         rows = []
         for measurement, tags, fields, timestamp in batch:
             if not isinstance(tags, dict) or not isinstance(fields, dict):
-                logger_ts.error(f"Invalid batch item skipped: measurement={measurement}")
                 continue
-            if not self._is_observation(measurement):
-                continue
-            rows.append(_build_row(measurement, tags, fields, timestamp))
-
+            rows.append(_build_raw_row(measurement, tags, fields, timestamp))
         if not rows:
             return
-
         batch_size = config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_BATCH_SIZE
         for i in range(0, len(rows), batch_size):
             chunk = rows[i : i + batch_size]
             async with self.pool.connection() as conn:
                 async with conn.cursor() as cur:
-                    await cur.executemany(INSERT_SQL, chunk)
+                    await cur.executemany(INSERT_RAW_SQL, chunk)
                 await conn.commit()
 
-        logger_ts.debug(f"Wrote {len(rows)} observation rows in batch")
+    async def save_data(self, measurement, tags, fields, timestamp=None):
+        await self._write_raw(measurement, tags, fields, timestamp)
+
+        if not self._is_observation(measurement):
+            return
+
+        row = _build_readings_row(measurement, tags, fields, timestamp)
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(INSERT_READINGS_SQL, row)
+            await conn.commit()
+
+    async def save_batch_data(self, batch):
+        if not batch:
+            return
+
+        await self._write_raw_batch(batch)
+
+        obs_rows = []
+        for measurement, tags, fields, timestamp in batch:
+            if not isinstance(tags, dict) or not isinstance(fields, dict):
+                continue
+            if self._is_observation(measurement):
+                obs_rows.append(_build_readings_row(measurement, tags, fields, timestamp))
+
+        if not obs_rows:
+            return
+
+        batch_size = config.WEATHERFLOW_COLLECTOR_TIMESCALEDB_BATCH_SIZE
+        for i in range(0, len(obs_rows), batch_size):
+            chunk = obs_rows[i : i + batch_size]
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.executemany(INSERT_READINGS_SQL, chunk)
+                await conn.commit()
 
     async def update(self, data):
-        """Event handler called by EventManager for ``influxdb_storage_event``."""
         if not self._ready:
             logger_ts.warning("TimescaleDB storage not ready, dropping event")
             return
