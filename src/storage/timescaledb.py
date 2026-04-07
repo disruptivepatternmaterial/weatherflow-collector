@@ -28,6 +28,11 @@ logger_ts = logger.get_module_logger(__name__ + ".TimescaleDBStorage")
 
 # Measurements that represent actual weather observations.
 OBSERVATION_MEASUREMENTS = {
+    "weatherflow_obs",
+    "weatherflow_rapid_wind",
+    "weatherflow_evt_strike",
+    "weatherflow_evt_precip",
+    "weatherflow_geo_strike",
     "obs_st",
     "obs_sky",
     "obs_air",
@@ -206,7 +211,10 @@ class TimescaleDBStorage:
     def _is_observation(self, measurement):
         if measurement in OBSERVATION_MEASUREMENTS:
             return True
-        if measurement and measurement.startswith("obs_"):
+        if measurement and (
+            measurement.startswith("obs_")
+            or measurement.startswith("weatherflow_")
+        ):
             return True
         return False
 
