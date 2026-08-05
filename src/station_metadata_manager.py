@@ -61,6 +61,7 @@ import json
 import logging
 import os
 import requests
+import threading
 import time
 
 import logger
@@ -73,6 +74,15 @@ logger_StationMetadataManager = logger.get_module_logger(
 
 
 class StationMetadataManager:
+    # Startup fetch retry tuning. A host reboot can bring the collector up
+    # before the network is ready (2026-08-04 incident: fetch died 15 s into
+    # boot and the collector ran with empty metadata, tagging Tempest rows as
+    # the hub). Retry with exponential backoff instead of accepting a single
+    # failed attempt.
+    STARTUP_RETRY_INITIAL_DELAY = 5  # seconds
+    STARTUP_RETRY_MAX_DELAY = 300  # cap backoff at 5 minutes
+    STARTUP_RETRY_WINDOW = 600  # block startup for at most ~10 minutes
+
     def __init__(self):
 
         self.api_token = config.WEATHERFLOW_COLLECTOR_API_TOKEN
@@ -327,41 +337,200 @@ class StationMetadataManager:
     # @utils.measure_execution_time("run")
     def run(self):
         logger_StationMetadataManager.info("Starting WeatherFlow station configuration")
-        try:
+
+        deadline = time.monotonic() + self.STARTUP_RETRY_WINDOW
+        delay = self.STARTUP_RETRY_INITIAL_DELAY
+        while True:
             data = self.fetch_station_metadata()
             if data:
-                self.process_metadata(data)
-                self.initialize_config()
-                self.update_config_file()
-                for station_id, info in self.station_metadata.items():
-                    station_name = info.get("name", "Unknown")
-                    enabled = info.get("enabled", "Unknown")
+                try:
+                    self._apply_metadata(data)
+                    return
+                except Exception as e:
+                    logger_StationMetadataManager.error(f"An error occurred: {e}")
+                    return
 
-                    # Apply color, bold, and flashing based on the enabled flag
-                    if enabled is True:
-                        # Bold Green for True
-                        enabled_status = f"\033[1;32m{enabled}\033[0m"
-                    elif enabled is False:
-                        # Bold Red and Flashing for False
-                        enabled_status = f"\033[1;31;5m{enabled}\033[0m"
-                    else:
-                        # No color or effect if status is unknown
-                        enabled_status = str(enabled)
+            if time.monotonic() >= deadline:
+                break
 
-                    logger_StationMetadataManager.info(
-                        f"Station \033[1m{station_id}\033[0m - \033[1m{station_name}\033[0m: Enabled flag - {enabled_status}"
-                    )
+            logger_StationMetadataManager.error(
+                f"Station metadata fetch failed; retrying in {delay} seconds "
+                "(startup retry window)"
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, self.STARTUP_RETRY_MAX_DELAY)
 
-                logger_StationMetadataManager.info(
-                    "WeatherFlow station configuration updated successfully"
+        # Startup retry window exhausted. Fall back to the last-good station
+        # configuration file so rows keep correct serial/station tags, and
+        # keep retrying the API in the background.
+        logger_StationMetadataManager.error(
+            "Could not fetch station metadata within the startup retry window; "
+            "falling back to the last-good configuration file"
+        )
+        if self.load_metadata_from_config_file():
+            metadata_singleton = utils.StationMetadataSingleton()
+            metadata_singleton.load_metadata(self.station_metadata)
+            logger_StationMetadataManager.warning(
+                f"Loaded last-good station metadata from {self.config_file}; "
+                "background refresh from the WeatherFlow API continues"
+            )
+        else:
+            logger_StationMetadataManager.error(
+                "No cached station configuration available; data will be "
+                "missing station tags until the WeatherFlow API is reachable"
+            )
+        self._start_background_refresh()
+
+    def _apply_metadata(self, data):
+        """Process fetched metadata, sync the config file, and publish to the Singleton."""
+        self.process_metadata(data)
+        self.initialize_config()
+        self.update_config_file()
+        for station_id, info in self.station_metadata.items():
+            station_name = info.get("name", "Unknown")
+            enabled = info.get("enabled", "Unknown")
+
+            # Apply color, bold, and flashing based on the enabled flag
+            if enabled is True:
+                # Bold Green for True
+                enabled_status = f"\033[1;32m{enabled}\033[0m"
+            elif enabled is False:
+                # Bold Red and Flashing for False
+                enabled_status = f"\033[1;31;5m{enabled}\033[0m"
+            else:
+                # No color or effect if status is unknown
+                enabled_status = str(enabled)
+
+            logger_StationMetadataManager.info(
+                f"Station \033[1m{station_id}\033[0m - \033[1m{station_name}\033[0m: Enabled flag - {enabled_status}"
+            )
+
+        logger_StationMetadataManager.info(
+            "WeatherFlow station configuration updated successfully"
+        )
+
+        # Load metadata into the Singleton (read live by the data processor,
+        # so a late load immediately fixes tags on subsequent rows)
+        metadata_singleton = utils.StationMetadataSingleton()
+        metadata_singleton.load_metadata(self.station_metadata)
+
+    def load_metadata_from_config_file(self):
+        """Rebuild last-good station metadata from the on-disk configuration file.
+
+        The config file persists station names and device serial numbers /
+        types from the last successful API fetch, which is enough to tag rows
+        correctly. Location details (latitude, elevation, time zone) are not
+        persisted and stay at their defaults until an API fetch succeeds.
+        Returns True if at least one device was recovered.
+        """
+        if not os.path.exists(self.config_file):
+            return False
+
+        config_parser = configparser.ConfigParser()
+        try:
+            config_parser.read(self.config_file)
+        except configparser.Error as e:
+            logger_StationMetadataManager.error(
+                f"Error reading cached configuration file: {e}"
+            )
+            return False
+
+        cached_metadata = {}
+
+        def station_entry(station_id):
+            return cached_metadata.setdefault(
+                station_id,
+                {
+                    "name": "Unknown",
+                    "station_id": station_id,
+                    "station_name": "Unknown",
+                    "latitude": 0.0,
+                    "longitude": 0.0,
+                    "elevation": 0.0,
+                    "time_zone": "Unknown",
+                    "enabled": True,
+                    "devices": [],
+                },
+            )
+
+        device_count = 0
+        for section in config_parser.sections():
+            if section.isdigit():  # Station section
+                entry = station_entry(int(section))
+                name = config_parser.get(section, "name", fallback="Unknown")
+                entry["name"] = name
+                entry["station_name"] = name
+                entry["enabled"] = config_parser.getboolean(
+                    section, "enabled", fallback=True
                 )
+            elif section.startswith("Device_"):  # Device section
+                parts = section.split("_")
+                if len(parts) != 3:
+                    continue
+                _, device_id_str, station_id_str = parts
+                entry = station_entry(int(station_id_str))
+                entry["devices"].append(
+                    {
+                        "device_id": config_parser.getint(
+                            section, "device_id", fallback=int(device_id_str)
+                        ),
+                        "device_type": config_parser.get(
+                            section, "device_type", fallback="Unknown"
+                        ),
+                        "serial_number": config_parser.get(
+                            section, "serial_number", fallback="Unknown"
+                        ),
+                        "device_name": config_parser.get(
+                            section, "name", fallback="Unknown"
+                        ),
+                        "agl": 0.0,
+                        "environment": "Unknown",
+                        "firmware_revision": "Unknown",
+                        "hardware_revision": "Unknown",
+                        "enabled": config_parser.getboolean(
+                            section, "enabled", fallback=True
+                        ),
+                    }
+                )
+                device_count += 1
 
-                # Load metadata into the Singleton
-                metadata_singleton = utils.StationMetadataSingleton()
-                metadata_singleton.load_metadata(self.station_metadata)
+        if device_count == 0:
+            return False
 
-        except Exception as e:
-            logger_StationMetadataManager.error(f"An error occurred: {e}")
+        self.station_metadata = cached_metadata
+        return True
+
+    def _start_background_refresh(self):
+        refresh_thread = threading.Thread(
+            target=self._background_refresh,
+            name="StationMetadataRefresh",
+            daemon=True,
+        )
+        refresh_thread.start()
+
+    def _background_refresh(self):
+        """Keep retrying the metadata fetch until it succeeds, then stop."""
+        delay = self.STARTUP_RETRY_INITIAL_DELAY
+        while True:
+            time.sleep(delay)
+            data = self.fetch_station_metadata()
+            if data:
+                try:
+                    self._apply_metadata(data)
+                    logger_StationMetadataManager.info(
+                        "Background station metadata refresh succeeded"
+                    )
+                    return
+                except Exception as e:
+                    logger_StationMetadataManager.error(
+                        f"An error occurred applying station metadata: {e}"
+                    )
+            else:
+                logger_StationMetadataManager.error(
+                    f"Background station metadata fetch failed; retrying in "
+                    f"{min(delay * 2, self.STARTUP_RETRY_MAX_DELAY)} seconds"
+                )
+            delay = min(delay * 2, self.STARTUP_RETRY_MAX_DELAY)
 
     # @utils.measure_execution_time("get_station_metadata")
     def get_station_metadata(self):

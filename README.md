@@ -797,6 +797,14 @@ ORDER BY time;
 
 Join with `weather.device_locations` for location hierarchy just like other sources.
 
+### Startup Station Metadata Retry (fork change)
+
+Upstream fetches station metadata from the WeatherFlow API exactly once at startup. If that single fetch failed (e.g. the container started during a host reboot before the network was up — observed in production on 2026-08-04), the collector ran with empty metadata and every row was written with hub-only tags (no `serial_number` / `station_name`) until a manual restart.
+
+This fork retries the startup fetch with exponential backoff (5 s doubling to a 5-minute cap) for up to ~10 minutes. If the API is still unreachable after that, it falls back to the last-good station configuration file (`conf/weatherflow_station.conf`, written on every successful fetch) so rows keep correct device tags, and keeps retrying the API in a background thread until it succeeds. Metadata is read live per event, so a late successful fetch immediately fixes tags on subsequent rows.
+
+Tests (mocked API, no network): `python3 -m pytest tests/ -v`
+
 ## Multiple Devices
 
 The data collector and dashboards support multiple WeatherFlow Tempest devices.
