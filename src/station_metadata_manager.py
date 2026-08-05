@@ -82,6 +82,9 @@ class StationMetadataManager:
     STARTUP_RETRY_INITIAL_DELAY = 5  # seconds
     STARTUP_RETRY_MAX_DELAY = 300  # cap backoff at 5 minutes
     STARTUP_RETRY_WINDOW = 600  # block startup for at most ~10 minutes
+    # When a last-good config file exists, only try the API briefly before
+    # falling back to it — local UDP collection is blocked while run() waits.
+    STARTUP_RETRY_CACHED_WINDOW = 15  # seconds
 
     def __init__(self):
 
@@ -323,11 +326,15 @@ class StationMetadataManager:
                     device_section, "name", device.get("device_name", "Unknown")
                 )
 
-        with open(self.config_file, "w") as configfile:
+        # Write atomically (tmp file + rename) so a mid-write kill cannot
+        # truncate the last-good cache used by the startup fallback
+        tmp_file = f"{self.config_file}.tmp"
+        with open(tmp_file, "w") as configfile:
             config_parser.write(configfile)
-            logger_StationMetadataManager.info(
-                "Configuration file updated with details for stations and devices (excluding 'enabled' flags)."
-            )
+        os.replace(tmp_file, self.config_file)
+        logger_StationMetadataManager.info(
+            "Configuration file updated with details for stations and devices (excluding 'enabled' flags)."
+        )
 
     # @utils.measure_execution_time("initialize_config")
     def initialize_config(self):
@@ -338,7 +345,15 @@ class StationMetadataManager:
     def run(self):
         logger_StationMetadataManager.info("Starting WeatherFlow station configuration")
 
-        deadline = time.monotonic() + self.STARTUP_RETRY_WINDOW
+        # With a last-good config file on disk, only block startup briefly:
+        # the cache is good enough to tag rows while the background thread
+        # upgrades to fresh metadata.
+        if os.path.exists(self.config_file):
+            startup_window = self.STARTUP_RETRY_CACHED_WINDOW
+        else:
+            startup_window = self.STARTUP_RETRY_WINDOW
+
+        deadline = time.monotonic() + startup_window
         delay = self.STARTUP_RETRY_INITIAL_DELAY
         while True:
             data = self.fetch_station_metadata()
@@ -350,14 +365,17 @@ class StationMetadataManager:
                     logger_StationMetadataManager.error(f"An error occurred: {e}")
                     return
 
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 break
 
+            # Clamp to the deadline so the startup window is not overshot
+            sleep_for = min(delay, remaining)
             logger_StationMetadataManager.error(
-                f"Station metadata fetch failed; retrying in {delay} seconds "
-                "(startup retry window)"
+                f"Station metadata fetch failed; retrying in {sleep_for:.0f} "
+                "seconds (startup retry window)"
             )
-            time.sleep(delay)
+            time.sleep(sleep_for)
             delay = min(delay * 2, self.STARTUP_RETRY_MAX_DELAY)
 
         # Startup retry window exhausted. Fall back to the last-good station
@@ -383,6 +401,10 @@ class StationMetadataManager:
 
     def _apply_metadata(self, data):
         """Process fetched metadata, sync the config file, and publish to the Singleton."""
+        # Build into a fresh dict: the previously published singleton dict may
+        # be read concurrently by handlers, so it must never be mutated in
+        # place. load_metadata() below is the only atomic publish point.
+        self.station_metadata = {}
         self.process_metadata(data)
         self.initialize_config()
         self.update_config_file()
@@ -455,44 +477,53 @@ class StationMetadataManager:
 
         device_count = 0
         for section in config_parser.sections():
-            if section.isdigit():  # Station section
-                entry = station_entry(int(section))
-                name = config_parser.get(section, "name", fallback="Unknown")
-                entry["name"] = name
-                entry["station_name"] = name
-                entry["enabled"] = config_parser.getboolean(
-                    section, "enabled", fallback=True
+            # One malformed section must never take down the fallback path —
+            # a crash here while the API is down means a restart loop
+            try:
+                if section.isdigit():  # Station section
+                    entry = station_entry(int(section))
+                    name = config_parser.get(section, "name", fallback="Unknown")
+                    entry["name"] = name
+                    entry["station_name"] = name
+                    entry["enabled"] = config_parser.getboolean(
+                        section, "enabled", fallback=True
+                    )
+                elif section.startswith("Device_"):  # Device section
+                    parts = section.split("_")
+                    if len(parts) != 3:
+                        continue
+                    _, device_id_str, station_id_str = parts
+                    entry = station_entry(int(station_id_str))
+                    entry["devices"].append(
+                        {
+                            "device_id": config_parser.getint(
+                                section, "device_id", fallback=int(device_id_str)
+                            ),
+                            "device_type": config_parser.get(
+                                section, "device_type", fallback="Unknown"
+                            ),
+                            "serial_number": config_parser.get(
+                                section, "serial_number", fallback="Unknown"
+                            ),
+                            "device_name": config_parser.get(
+                                section, "name", fallback="Unknown"
+                            ),
+                            "agl": 0.0,
+                            "environment": "Unknown",
+                            "firmware_revision": "Unknown",
+                            "hardware_revision": "Unknown",
+                            "enabled": config_parser.getboolean(
+                                section, "enabled", fallback=True
+                            ),
+                        }
+                    )
+                    device_count += 1
+            except (ValueError, configparser.Error) as e:
+                logger_StationMetadataManager.warning(
+                    f"Skipping malformed section '{section}' in cached "
+                    f"configuration file: {e}"
                 )
-            elif section.startswith("Device_"):  # Device section
-                parts = section.split("_")
-                if len(parts) != 3:
-                    continue
-                _, device_id_str, station_id_str = parts
-                entry = station_entry(int(station_id_str))
-                entry["devices"].append(
-                    {
-                        "device_id": config_parser.getint(
-                            section, "device_id", fallback=int(device_id_str)
-                        ),
-                        "device_type": config_parser.get(
-                            section, "device_type", fallback="Unknown"
-                        ),
-                        "serial_number": config_parser.get(
-                            section, "serial_number", fallback="Unknown"
-                        ),
-                        "device_name": config_parser.get(
-                            section, "name", fallback="Unknown"
-                        ),
-                        "agl": 0.0,
-                        "environment": "Unknown",
-                        "firmware_revision": "Unknown",
-                        "hardware_revision": "Unknown",
-                        "enabled": config_parser.getboolean(
-                            section, "enabled", fallback=True
-                        ),
-                    }
-                )
-                device_count += 1
+                continue
 
         if device_count == 0:
             return False

@@ -801,7 +801,9 @@ Join with `weather.device_locations` for location hierarchy just like other sour
 
 Upstream fetches station metadata from the WeatherFlow API exactly once at startup. If that single fetch failed (e.g. the container started during a host reboot before the network was up — observed in production on 2026-08-04), the collector ran with empty metadata and every row was written with hub-only tags (no `serial_number` / `station_name`) until a manual restart.
 
-This fork retries the startup fetch with exponential backoff (5 s doubling to a 5-minute cap) for up to ~10 minutes. If the API is still unreachable after that, it falls back to the last-good station configuration file (`conf/weatherflow_station.conf`, written on every successful fetch) so rows keep correct device tags, and keeps retrying the API in a background thread until it succeeds. Metadata is read live per event, so a late successful fetch immediately fixes tags on subsequent rows.
+This fork retries the startup fetch with exponential backoff (5 s doubling to a 5-minute cap) for up to ~10 minutes. If the API is still unreachable after that, it falls back to the last-good station configuration file (`conf/weatherflow_station.conf`, written atomically on every successful fetch) so rows keep correct device tags, and keeps retrying the API in a background thread until it succeeds. When a last-good config file already exists, startup only tries the API briefly (~15 s) before falling back, so local UDP collection is not blocked while a usable cache sits on disk. Metadata is read live per event, so a late successful fetch immediately fixes tags on subsequent rows.
+
+**Note:** for the last-good cache to survive container recreation, the Docker deployment must mount a volume for `/app/weatherflow-collector/conf` (where `weatherflow_station.conf` lives). Without it, the cache is wiped every time the container is recreated and the fallback has nothing to fall back to.
 
 Tests (mocked API, no network): `python3 -m pytest tests/ -v`
 
