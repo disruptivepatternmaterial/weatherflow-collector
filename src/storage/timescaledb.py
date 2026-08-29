@@ -59,6 +59,9 @@ FIELD_TO_COLUMN = {
     "station_pressure": "pressure_hpa",
     "sea_level_pressure": "sea_level_pressure_hpa",
     "wind_avg": "wind_speed_mps",
+    # rapid_wind reports the instantaneous speed as `wind_speed`, not `wind_avg`.
+    # Without this every rapid_wind row stored a direction and no speed at all.
+    "wind_speed": "wind_speed_mps",
     "wind_direction": "wind_direction_deg",
     "wind_gust": "wind_gust_mps",
     "wind_lull": "wind_lull_mps",

@@ -487,6 +487,8 @@ def normalize_fields(fields):
         "wind_gust": float,
         "wind_lull": float,
         "wind_sample_interval": int,
+        # rapid_wind's instantaneous speed, so it is coerced like wind_avg
+        "wind_speed": float,
     }
 
     normalized_fields = {}
