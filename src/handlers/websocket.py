@@ -767,7 +767,7 @@ class WebSocketHandler(BaseDataHandler):
         strike_type = data.get("strike_type")
 
         fields = {
-            "time": time,
+            "timestamp": time,
             "latitude": lat,
             "longitude": lon,
             "magnitude": mag,
