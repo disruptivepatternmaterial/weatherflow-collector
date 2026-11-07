@@ -53,10 +53,14 @@ NON_OBSERVATION_PREFIXES = (
 
 # --- field mapping for weather.readings ---
 
+# When two names share a column, the later one wins. The collector's own
+# calculated_* values come first, so a value the station or WeatherFlow's web
+# service reports itself takes precedence when a message carries both.
 FIELD_TO_COLUMN = {
     "air_temperature": "temperature_c",
     "relative_humidity": "humidity_pct",
     "station_pressure": "pressure_hpa",
+    "calculated_sea_level_pressure": "sea_level_pressure_hpa",
     "sea_level_pressure": "sea_level_pressure_hpa",
     "wind_avg": "wind_speed_mps",
     # rapid_wind reports the instantaneous speed as `wind_speed`, not `wind_avg`.
@@ -66,8 +70,8 @@ FIELD_TO_COLUMN = {
     "wind_gust": "wind_gust_mps",
     "wind_lull": "wind_lull_mps",
     "uv": "uvi",
-    "dew_point": "dew_point_c",
     "calculated_dew_point": "dew_point_c",
+    "dew_point": "dew_point_c",
     "solar_radiation": "solar_radiation_wm2",
     "illuminance": "illuminance_lux",
     "lightning_strike_count": "lightning_strike_count",
@@ -75,9 +79,12 @@ FIELD_TO_COLUMN = {
     "precip": "precipitation_mm",
     "rain_accumulated": "precipitation_mm",
     "feels_like": "feels_like_c",
+    "calculated_heat_index": "heat_index_c",
     "heat_index": "heat_index_c",
+    "calculated_wind_chill": "wind_chill_c",
     "wind_chill": "wind_chill_c",
     "battery": "battery_voltage_v",
+    "local_daily_rain_accumulation": "precip_accum_local_day_mm",
     "precip_accum_local_day": "precip_accum_local_day_mm",
     "precip_accum_local_yesterday": "precip_accum_local_yesterday_mm",
     "firmware_revision": "firmware_version",

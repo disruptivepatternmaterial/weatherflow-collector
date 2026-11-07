@@ -134,6 +134,73 @@ def test_rapid_wind_has_no_dew_point():
     assert got["dew_point_c"] is None
 
 
+# --- today's rain ------------------------------------------------------------
+
+def test_obs_stores_todays_rain():
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750,
+                                          "local_daily_rain_accumulation": 6.809263})
+    assert got["precip_accum_local_day_mm"] == pytest.approx(6.809263)
+
+
+def test_todays_rain_of_zero_is_stored_not_dropped():
+    """A dry day is a real reading, not a missing one."""
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750,
+                                          "local_daily_rain_accumulation": 0.0})
+    assert got["precip_accum_local_day_mm"] is not None
+    assert got["precip_accum_local_day_mm"] == 0.0
+
+
+def test_missing_todays_rain_stays_null():
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750,
+                                          "air_temperature": 11.2})
+    assert got["precip_accum_local_day_mm"] is None
+
+
+# --- other calculated values -------------------------------------------------
+
+def test_udp_obs_stores_calculated_values():
+    """The station's direct reading only has the collector's calculated values."""
+    fields = {
+        "timestamp": 1787887750,
+        "air_temperature": 12.9,
+        "calculated_sea_level_pressure": 1016.2,
+        "calculated_heat_index": 12.9,
+        "calculated_wind_chill": 12.4,
+    }
+    got = row_as_dict("weatherflow_obs", fields)
+
+    assert got["sea_level_pressure_hpa"] == pytest.approx(1016.2)
+    assert got["heat_index_c"] == pytest.approx(12.9)
+    assert got["wind_chill_c"] == pytest.approx(12.4)
+
+
+def test_web_service_values_win_over_calculated_ones():
+    """REST rows carry both; the value WeatherFlow reports is the one stored."""
+    fields = {
+        "timestamp": 1787887750,
+        "heat_index": 9.9,
+        "calculated_heat_index": 9.94,
+        "wind_chill": 8.7,
+        "calculated_wind_chill": 9.9,
+        "sea_level_pressure": 1015.0,
+        "calculated_sea_level_pressure": 1016.2,
+    }
+    got = row_as_dict("weatherflow_obs", fields)
+
+    assert got["heat_index_c"] == pytest.approx(9.9)
+    assert got["wind_chill_c"] == pytest.approx(8.7)
+    assert got["sea_level_pressure_hpa"] == pytest.approx(1015.0)
+
+
+def test_rapid_wind_gets_none_of_the_obs_values():
+    got = row_as_dict("weatherflow_rapid_wind", {"timestamp": 1787887750,
+                                                 "wind_speed": 0.66,
+                                                 "wind_direction": 280})
+    for column in ("precip_accum_local_day_mm", "sea_level_pressure_hpa",
+                   "heat_index_c", "wind_chill_c"):
+        assert got[column] is None
+
+
 # --- the normaliser backing it ----------------------------------------------
 
 def test_normalizer_treats_wind_speed_like_wind_avg():
