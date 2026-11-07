@@ -84,7 +84,7 @@ FIELD_TO_COLUMN = {
 
 READING_COLUMNS = [
     "time", "device_id", "device_name", "source", "measurement",
-    "temperature_c", "temperature_f", "humidity_pct", "pressure_hpa",
+    "temperature_c", "humidity_pct", "pressure_hpa",
     "sea_level_pressure_hpa", "wind_speed_mps", "wind_direction_deg",
     "wind_gust_mps", "wind_lull_mps", "uvi", "dew_point_c",
     "solar_radiation_wm2", "illuminance_lux", "lightning_strike_count",
@@ -147,10 +147,6 @@ def _build_readings_row(measurement, tags, fields, timestamp):
         if wf_field in fields and fields[wf_field] is not None:
             mapped[column] = fields[wf_field]
 
-    temp_c = mapped.get("temperature_c")
-    if temp_c is not None:
-        mapped["temperature_f"] = round(float(temp_c) * 9.0 / 5.0 + 32.0, 2)
-
     return (
         _ts_to_datetime(timestamp),
         device_id,
@@ -158,7 +154,6 @@ def _build_readings_row(measurement, tags, fields, timestamp):
         "weatherflow",
         measurement,
         mapped.get("temperature_c"),
-        mapped.get("temperature_f"),
         mapped.get("humidity_pct"),
         mapped.get("pressure_hpa"),
         mapped.get("sea_level_pressure_hpa"),

@@ -92,7 +92,7 @@ def test_obs_still_maps_wind_avg():
     assert got["wind_lull_mps"] == pytest.approx(1.4)
     assert got["wind_direction_deg"] == 190
     assert got["temperature_c"] == pytest.approx(20.0)
-    assert got["temperature_f"] == pytest.approx(68.0)
+    assert "temperature_f" not in got
 
 
 def test_both_wind_field_names_target_the_same_column():
