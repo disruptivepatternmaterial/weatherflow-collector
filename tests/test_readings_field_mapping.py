@@ -112,6 +112,28 @@ def test_a_missing_wind_speed_stays_null():
     assert got["wind_speed_mps"] is None
 
 
+# --- dew point ---------------------------------------------------------------
+
+def test_obs_stores_calculated_dew_point():
+    """The station sends `calculated_dew_point`; `_buck` is a different formula."""
+    fields = {
+        "timestamp": 1787887750,
+        "air_temperature": 11.2,
+        "calculated_dew_point": 8.9,
+        "calculated_dew_point_buck": 8.7,
+    }
+    got = row_as_dict("weatherflow_obs", fields)
+
+    assert got["dew_point_c"] == pytest.approx(8.9)
+
+
+def test_rapid_wind_has_no_dew_point():
+    got = row_as_dict("weatherflow_rapid_wind", {"timestamp": 1787887750,
+                                                 "wind_speed": 0.66,
+                                                 "wind_direction": 280})
+    assert got["dew_point_c"] is None
+
+
 # --- the normaliser backing it ----------------------------------------------
 
 def test_normalizer_treats_wind_speed_like_wind_avg():

@@ -67,6 +67,7 @@ FIELD_TO_COLUMN = {
     "wind_lull": "wind_lull_mps",
     "uv": "uvi",
     "dew_point": "dew_point_c",
+    "calculated_dew_point": "dew_point_c",
     "solar_radiation": "solar_radiation_wm2",
     "illuminance": "illuminance_lux",
     "lightning_strike_count": "lightning_strike_count",
