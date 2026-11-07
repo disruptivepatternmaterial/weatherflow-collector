@@ -201,6 +201,72 @@ def test_rapid_wind_gets_none_of_the_obs_values():
         assert got[column] is None
 
 
+# --- station location ----------------------------------------------------------
+
+STATION_TAGS = {
+    "serial_number": "ST-00000001",
+    "station_latitude": 40.0,
+    "station_longitude": -105.0,
+    "station_elevation": 1000.0,
+}
+
+
+@pytest.mark.parametrize("measurement", ["weatherflow_obs", "weatherflow_rapid_wind"])
+def test_station_location_tags_fill_their_columns(measurement):
+    got = row_as_dict(measurement, {"timestamp": 1787887750, "wind_speed": 0.66},
+                      tags=STATION_TAGS)
+
+    assert got["latitude"] == pytest.approx(40.0)
+    assert got["longitude"] == pytest.approx(-105.0)
+    assert got["elevation_m"] == pytest.approx(1000.0)
+
+
+def test_unknown_station_location_stays_null():
+    tags = {"serial_number": "ST-00000001", "station_latitude": None,
+            "station_longitude": None, "station_elevation": None}
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750}, tags=tags)
+
+    assert got["latitude"] is None
+    assert got["longitude"] is None
+    assert got["elevation_m"] is None
+
+
+def test_missing_station_location_tags_stay_null():
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750},
+                      tags={"serial_number": "ST-00000001"})
+
+    assert got["latitude"] is None
+    assert got["longitude"] is None
+    assert got["elevation_m"] is None
+
+
+def test_station_elevation_of_zero_is_stored_not_dropped():
+    """A station at sea level is a real reading."""
+    tags = dict(STATION_TAGS, station_elevation=0.0)
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750}, tags=tags)
+
+    assert got["elevation_m"] is not None
+    assert got["elevation_m"] == 0.0
+
+
+def test_station_location_that_is_not_a_number_is_not_stored():
+    tags = dict(STATION_TAGS, station_latitude="40.0", station_longitude=True)
+    got = row_as_dict("weatherflow_obs", {"timestamp": 1787887750}, tags=tags)
+
+    assert got["latitude"] is None
+    assert got["longitude"] is None
+    assert got["elevation_m"] == pytest.approx(1000.0)
+
+
+def test_strike_position_fields_are_not_the_station_location():
+    fields = {"timestamp": 1787887750, "latitude": 41.5, "longitude": -104.2}
+    got = row_as_dict("weatherflow_geo_strike", fields,
+                      tags={"serial_number": "ST-00000001"})
+
+    assert got["latitude"] is None
+    assert got["longitude"] is None
+
+
 # --- the normaliser backing it ----------------------------------------------
 
 def test_normalizer_treats_wind_speed_like_wind_avg():

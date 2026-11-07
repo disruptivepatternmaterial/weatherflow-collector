@@ -174,9 +174,11 @@ class StationMetadataManager:
                 "name": station.get("name", "Unknown"),
                 "station_id": station_id,
                 "station_name": station.get("name", "Unknown"),
-                "latitude": station.get("latitude", 0.0),
-                "longitude": station.get("longitude", 0.0),
-                "elevation": station.get("station_meta", {}).get("elevation", 0.0),
+                # Unknown stays None: 0.0 is a real place, and an elevation of 0
+                # turns the calculated sea level pressure into station pressure.
+                "latitude": station.get("latitude"),
+                "longitude": station.get("longitude"),
+                "elevation": station.get("station_meta", {}).get("elevation"),
                 "time_zone": station.get("timezone", "Unknown"),
                 "enabled": True,  # Set default enabled flag to True
                 "devices": devices_info,
@@ -442,7 +444,7 @@ class StationMetadataManager:
         The config file persists station names and device serial numbers /
         types from the last successful API fetch, which is enough to tag rows
         correctly. Location details (latitude, elevation, time zone) are not
-        persisted and stay at their defaults until an API fetch succeeds.
+        persisted and stay unknown (None) until an API fetch succeeds.
         Returns True if at least one device was recovered.
         """
         if not os.path.exists(self.config_file):
@@ -466,9 +468,9 @@ class StationMetadataManager:
                     "name": "Unknown",
                     "station_id": station_id,
                     "station_name": "Unknown",
-                    "latitude": 0.0,
-                    "longitude": 0.0,
-                    "elevation": 0.0,
+                    "latitude": None,
+                    "longitude": None,
+                    "elevation": None,
                     "time_zone": "Unknown",
                     "enabled": True,
                     "devices": [],

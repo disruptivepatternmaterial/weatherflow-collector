@@ -141,7 +141,7 @@ class RESTForecastsHandler(BaseDataHandler):
             "wind_avg",
         ]
         weather_data = {k: fields.get(k) for k in weather_data_keys if k in fields}
-        weather_data["elevation"] = station_info.get("station_elevation", 0)
+        weather_data["elevation"] = station_info.get("station_elevation")
 
         additional_metrics = CalculateWeatherMetrics.calculate_weather_metrics(
             weather_data

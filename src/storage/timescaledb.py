@@ -90,6 +90,15 @@ FIELD_TO_COLUMN = {
     "firmware_revision": "firmware_version",
 }
 
+# Station location arrives as tags, not fields. Only real numbers are stored:
+# unknown location is None at the source, and a field named `latitude` (a
+# strike's position) is not the station's.
+TAG_TO_COLUMN = {
+    "station_latitude": "latitude",
+    "station_longitude": "longitude",
+    "station_elevation": "elevation_m",
+}
+
 READING_COLUMNS = [
     "time", "device_id", "device_name", "source", "measurement",
     "temperature_c", "humidity_pct", "pressure_hpa",
@@ -99,7 +108,8 @@ READING_COLUMNS = [
     "lightning_strike_avg_distance_km", "precipitation_mm",
     "precip_accum_local_day_mm", "precip_accum_local_yesterday_mm",
     "feels_like_c", "heat_index_c", "wind_chill_c",
-    "battery_voltage_v", "firmware_version", "raw_payload",
+    "battery_voltage_v", "firmware_version",
+    "latitude", "longitude", "elevation_m", "raw_payload",
 ]
 
 _COLS_CSV = ", ".join(READING_COLUMNS)
@@ -155,6 +165,11 @@ def _build_readings_row(measurement, tags, fields, timestamp):
         if wf_field in fields and fields[wf_field] is not None:
             mapped[column] = fields[wf_field]
 
+    for tag, column in TAG_TO_COLUMN.items():
+        value = sorted_tags.get(tag)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            mapped[column] = float(value)
+
     return (
         _ts_to_datetime(timestamp),
         device_id,
@@ -183,6 +198,9 @@ def _build_readings_row(measurement, tags, fields, timestamp):
         mapped.get("wind_chill_c"),
         mapped.get("battery_voltage_v"),
         str(mapped["firmware_version"]) if mapped.get("firmware_version") is not None else None,
+        mapped.get("latitude"),
+        mapped.get("longitude"),
+        mapped.get("elevation_m"),
         json.dumps({"tags": sorted_tags, "fields": fields}),
     )
 
